@@ -17,6 +17,8 @@ nav:
     - unikernels/unikraft.md
   - examples.md
   - usecases.md
+  - Developers Guide: 
+    - post.md
 
 theme:
   name: material
