@@ -1,6 +1,11 @@
 # Add a simple vAccel plugin
 
-vAccel is a simple yet powerful framework that semantically exposes function prototypes to the user, while executing the relevant operation under the hood. vAccel is structured in two main components: the runtime system, vAccelRT and the plugins. Plugins expose one or more functionalities to the upper-layers of the runtime system, in a way that the user can directly consume these functions without caring about the underlying implementation. 
+vAccel is a simple yet powerful framework that semantically exposes function
+prototypes to the user, while executing the relevant operation under the hood.
+vAccel is structured in two main components: the runtime system, vAccelRT and
+the plugins. Plugins expose one or more functionalities to the upper-layers of
+the runtime system, in a way that the user can directly consume these functions
+without caring about the underlying implementation. 
 
 In this short tutorial, we will go through adding a simple vector add operation
 to vAccelRT, and build a plugin that implements this operation using OpenCL.
@@ -156,9 +161,13 @@ Suppose we have some code written for a project and we want to integrate it in
 vAccel, in order to expose the functionality to users without them caring about
 the underlying implementation. 
 
-In short, lets say we have a `vector add` operation, in `OpenCL`. A first-page google result for `opencl example vector add` showed the following github repo: `https://github.com/mantiuk/opencl_examples` which we forked at `https://github.com/nubificus/opencl_examples`.
+In short, lets say we have a `vector add` operation, in `OpenCL`. A first-page
+google result for `opencl example vector add` showed the following github repo:
+`https://github.com/mantiuk/opencl_examples` which we forked at
+`https://github.com/nubificus/opencl_examples`.
 
-To build, you will need a working OpenCL installation. On my debian-based OS I just did `apt-get install libpocl-dev`.
+To build, you will need a working OpenCL installation. On my debian-based OS I
+just did `apt-get install libpocl-dev`.
 
 So, lets get the code and build it:
 
@@ -253,92 +262,11 @@ So, if we want to expose this `vector add` operation via vAccelRT, we need to do
 
 Lets see how easy it is to do both!
 
-### expose the `vector add` operation
+### "libify" the `vector add` operation
 
-To add a vAccel operation we need to:
-
-- add it as an operation in `vaccel_ops.h`
-- add its plugin matching code to `vaccel_ops.c`
-
-Specifically the patch to add this operation is the following:
-
-```
-diff --git a/src/vaccel_ops.h b/src/vaccel_ops.h
-index 0ca98e6..9e1a81f 100644
---- a/src/vaccel_ops.h
-+++ b/src/vaccel_ops.h
-@@ -9,7 +9,8 @@
- #define VACCEL_IMG_CLASS    2
- #define VACCEL_IMG_DETEC    3
- #define VACCEL_IMG_SEGME    4
--#define VACCEL_FUNCTIONS_NR 5
-+#define VACCEL_VADD        5
-+#define VACCEL_FUNCTIONS_NR 6
- 
- static const char *vaccel_op_name[] = {
-        "noop",
-@@ -17,6 +18,7 @@ static const char *vaccel_op_name[] = {
-        "image-classification",
-        "image-detection",
-        "image-segmentation",
-+       "vadd",
- };
- 
- inline static const char *vaccel_op_type_str(uint8_t op_type)
-@@ -44,4 +46,6 @@ int vaccel_image_segmentation(struct vaccel_session *sess, void *img,
-                unsigned char *out_imgname, size_t len_img,
-                size_t len_out_imgname);
- 
-+int vaccel_vector_add(struct vaccel_session *sess);
-+
- #endif /* __VACCEL_OPS_H__ */
-diff --git a/src/vaccel_ops.c b/src/vaccel_ops.c
-index f7d80b9..76b5cf0 100644
---- a/src/vaccel_ops.c
-+++ b/src/vaccel_ops.c
-@@ -10,6 +10,7 @@ typedef typeof(vaccel_sgemm) sgemm_t;
- typedef typeof(vaccel_image_classification) image_classification_t;
- typedef typeof(vaccel_image_detection) image_detection_t;
- typedef typeof(vaccel_image_segmentation) image_segmentation_t;
-+typedef typeof(vaccel_vector_add) vadd_t;
- 
- int vaccel_noop(struct vaccel_session *sess)
- {
-@@ -45,3 +46,19 @@ int vaccel_image_classification(struct vaccel_session *sess, const void *img,
-        return plugin_op(sess, img, out_text, out_imgname, len_img,
-                        len_out_text, len_out_imgname);
- }
-+
-+int vaccel_vector_add(struct vaccel_session *sess)
-+{
-+       if (!sess)
-+               return VACCEL_EINVAL;
-+
-+       vaccel_debug("session:%u Looking for plugin implementing vector add",
-+                       sess->session_id);
-+
-+       //Get implementation
-+       vadd_t *plugin_op = get_plugin_op(VACCEL_VADD);
-+       if (!plugin_op)
-+               return VACCEL_ENOTSUP;
-+
-+       return plugin_op(sess);
-+}
-
-```
-Let's go through what the code does. 
-
-XXXXXXX TBC
-XXXXXXX
-
-
-### Transform our code to a vAccel plugin
-
-To integrate our code to vAccel as a plugin we need to:
-
-- build it as a shared library and replace `main` with the name of our
-  choosing; in this case `vector_add`,
-- create the glue code to register this operation/symbol with `VACCEL_VADD`.
+The simplest way to add an operation to vAccelRT is to "libify" this operation:
+expose the operation as a function prototype through a shared library. To do
+this, we need to tweak the build system, and change the code slightly.
 
 The patch to the repo is the following:
 
@@ -378,12 +306,155 @@ a re-build of our code produces a shared object, `libvector_add.so`, which
 contains a symbol `vector_add`, which is, essentially, the vector add
 operation.
 
-Our work is not done though; we need to create a vAccel plugin and register it
-as one of the implementations of the `VACCEL_VADD` operation we added above.
+To verify the library works correctly, we build a small program that calls it:
 
-Let's use the NOOP plugin as reference; we copy its contents to a new
-directory, called `vadd`. We go back to the vAccelRT base source dir and
-execute the following:
+```
+int vector_add();
+
+int main(int argc, char **argv)
+{
+
+	vector_add();
+
+	return 0;
+}
+```
+
+we build it with the following arguments:
+
+```
+gcc wrapper.c -Wall -L../opencl_examples/build/vector_add/ -lvector_add -lOpenCL -o vector_add
+```
+
+and run it making sure we specify the path to libvector_add.so:
+
+```
+# LD_LIBRARY_PATH=$(PWD)/../opencl_examples/build/vector_add/ ./vector_add
+Using platform: Intel(R) OpenCL HD Graphics
+Using device: Intel(R) Graphics [0x9b41]
+ result: 
+0 2 4 3 5 7 6 8 10 9 
+```
+
+All fine until now: we have a library, `libvector_add.so`, a wrapper executable
+that calls this library, and we're a bit familiar with vAccel so lets glue
+these together! 
+
+### vAccelRT integration
+
+To add a vAccel operation we need to:
+
+- add it as an operation in `vaccel_ops.{c,h}`
+- add its plugin code to `plugins/<operation>/vaccel.c`
+
+Luckily, vAccelRT has support for a `generic operation`. This means that given
+an internal (user-defined, framework agnostic) representation of functions and
+arguments, the user can execute arbitrary functions, provided they are exposed
+through a shared library.
+
+Let's tweak our wrapper program, to use `vaccel_genop` (`wrapper_genop.c`):
+
+```
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <vaccel.h>
+#include <vaccel_ops.h>
+
+int vaccel_vector_add()
+{
+
+	int ret = 0;
+	struct vaccel_session sess;
+
+        ret = vaccel_sess_init(&sess, 0);
+        if (ret != VACCEL_OK) {
+                fprintf(stderr, "Could not initialize session\n");
+                return 1;
+        }
+
+        printf("Initialized session with id: %u\n", sess.session_id);
+
+	char *operation = "vector-add";
+	size_t len = strlen(operation);
+
+        ret = vaccel_genop(&sess, NULL, operation, 0, len);
+	if (ret) {
+		fprintf(stderr, "Could not run op: %d\n", ret);
+		goto close_session;
+	}
+
+
+close_session:
+        if (vaccel_sess_free(&sess) != VACCEL_OK) {
+                fprintf(stderr, "Could not clear session\n");
+                return 1;
+        }
+
+
+	return ret;
+}
+
+int main(int argc, char **argv)
+{
+	vaccel_vector_add();
+
+	return 0;
+}
+```
+
+We've added the vaccel_vector_add() function which essentially initializes a
+vaccel session, calls `vaccel_genop` with an input parameter string
+`vector-add` and closes the session to return.
+
+We build it, linking against vaccelrt:
+
+```
+gcc -owrapper_genop wrapper_genop.c -Wall -L/home/ananos/develop/fresh/vaccelrt/build/src -I/home/ananos/develop/fresh/vaccelrt/src -lvaccel -ldl
+```
+
+If we try to execute it with the `noop` plugin and some debug enabled, we get:
+
+```
+$ VACCEL_DEBUG_LEVEL=4 VACCEL_BACKENDS=../vaccelrt/build/plugins/noop/libvaccel-noop.so LD_LIBRARY_PATH=../vaccelrt/build/src ./a.out 
+2021.04.03-07:06:21.20 - <debug> Initializing vAccel
+2021.04.03-07:06:21.20 - <debug> Registered plugin noop
+[...]
+2021.04.03-07:06:21.20 - <debug> Registered function gen-op from plugin noop
+2021.04.03-07:06:21.20 - <debug> Loaded plugin noop from ../vaccelrt/build/plugins/noop/libvaccel-noop.so
+2021.04.03-07:06:21.20 - <debug> session:1 New session
+Initialized session with id: 1
+2021.04.03-07:06:21.20 - <debug> session:1 Looking for plugin implementing generic op
+2021.04.03-07:06:21.20 - <debug> Found implementation in noop plugin
+2021.04.03-07:06:21.20 - <debug> Calling do-op for session 1
+2021.04.03-07:06:21.20 - <debug> [noop] [genop] in_nargs: 10, out_nargs: 0
+
+2021.04.03-07:06:21.20 - <debug> session:1 Free session
+2021.04.03-07:06:21.20 - <debug> Shutting down vAccel
+2021.04.03-07:06:21.20 - <debug> Cleaning up plugins
+2021.04.03-07:06:21.20 - <debug> Unregistered plugin noop
+```
+
+We see that the `genop` operation has been triggered and got 10 bytes as an
+input argument.
+
+In order to take advantage of this generic operation, we should write our own
+plugin, that just calls vector_add via the shared library. Let's see how we can
+do that!
+
+### Transform our code to a vAccel plugin
+
+To integrate our code to vAccel as a plugin we need to:
+
+- build it as a shared library and replace `main` with the name of our
+  choosing; in this case `vector_add`,
+- create the glue code to parse the `vaccel_genop` input arguments.
+
+Let's use the `noop` plugin as reference; we copy its contents to a new
+directory, called `vadd`. 
+
+We go back to the vAccelRT base source dir and execute the following:
 
 ```
 cp -avf plugins/noop plugins/vadd
@@ -397,6 +468,8 @@ plugins/vadd
 └── vaccel.c
 ```
 
+copy `libvector_add.so` to this directory too.
+
 and the following contents for CMakeLists.txt:
 
 ```
@@ -405,9 +478,6 @@ set(SOURCES vaccel.c ${include_dirs}/vaccel.h ${include_dirs}/plugin.h)
 
 add_library(vaccel-vadd SHARED ${SOURCES})
 target_include_directories(vaccel-vadd PRIVATE ${include_dirs})
-
-set(VADD_LIB "/home/ananos/develop/opencl_examples/build/vector_add")
-message("Using VADD_LIB ${VADD_LIB}")
 
 target_link_libraries(vaccel-vadd PRIVATE vector_add OpenCL)
 
@@ -432,7 +502,7 @@ int ocl_vector_add(struct vaccel_session *sess)
 	return vector_add();
 }
 
-struct vaccel_op op = VACCEL_OP_INIT(op, VACCEL_VADD, ocl_vector_add);
+struct vaccel_op op = VACCEL_OP_INIT(op, VACCEL_GEN_OP, ocl_vector_add);
 
 static int init(void)
 {
@@ -451,4 +521,38 @@ VACCEL_MODULE(
 	.fini = fini
 )
 ```
+
+We build vAccelRT and we see that a new plugin is now available,
+libvaccel-vadd.so. Lets use this one instead of the `noop` one!
+
+```
+VACCEL_DEBUG_LEVEL=4 VACCEL_BACKENDS=../vaccelrt/build/plugins/vadd/libvaccel-vadd.so LD_LIBRARY_PATH=../vaccelrt/build/src:. ./wrapper_genop
+2021.04.03-07:16:55.77 - <debug> Initializing vAccel
+2021.04.03-07:16:55.78 - <debug> Registered plugin vadd
+2021.04.03-07:16:55.78 - <debug> Registered function gen-op from plugin vadd
+2021.04.03-07:16:55.78 - <debug> Loaded plugin vadd from ../vaccelrt/build2/plugins/vadd/libvaccel-vadd.so
+2021.04.03-07:16:55.78 - <debug> session:1 New session
+Initialized session with id: 1
+2021.04.03-07:16:55.78 - <debug> session:1 Looking for plugin implementing generic op
+2021.04.03-07:16:55.78 - <debug> Found implementation in vadd plugin
+2021.04.03-07:16:55.78 - <debug> Calling do-op for session 1
+2021.04.03-07:16:55.78 - <debug> [vadd] [genop] in_nargs: 10, out_nargs: 0
+
+Using platform: Intel(R) OpenCL HD Graphics
+Using device: Intel(R) Graphics [0x9b41]
+ result: 
+0 2 4 3 5 7 6 8 10 9 
+2021.04.03-07:16:56.10 - <debug> session:1 Free session
+2021.04.03-07:16:56.10 - <debug> Shutting down vAccel
+2021.04.03-07:16:56.10 - <debug> Cleaning up plugins
+2021.04.03-07:16:56.10 - <debug> Unregistered plugin vadd
+```
+
+We made it! We are actually able to call vector_add() from vAccel by following
+three simple steps:
+
+- "libifying" our code
+- creating a simple plugin based on this library
+- modifying our calling code to initialize a vaccel session and call
+  `vaccel_genop`
 
