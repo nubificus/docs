@@ -556,3 +556,171 @@ three simple steps:
 - modifying our calling code to initialize a vaccel session and call
   `vaccel_genop`
 
+### Adding arguments
+
+Well, calling a simple function with no arguments seemed a bit too naive right?
+How about we tweak the `vector_add` example so that we pass the vectors to be
+calculated as arguments?
+
+#### Tweak `vector_add`
+
+First we need to change our library code:
+
+```
+diff --git a/vector_add/CMakeLists.txt b/vector_add/CMakeLists.txt
+index 714509e..dab44e6 100755
+--- a/vector_add/CMakeLists.txt
++++ b/vector_add/CMakeLists.txt
+@@ -1,6 +1,7 @@
+ include_directories ("${PROJECT_SOURCE_DIR}/include" ${OpenCL_INCLUDE_DIRS})
+ 
+-add_executable(ocl_vector_add vector_add.cpp)
+-target_compile_features(ocl_vector_add PRIVATE cxx_range_for)
+-target_link_libraries(ocl_vector_add ${OpenCL_LIBRARIES})
++add_library(vector_add SHARED vector_add.cpp)
++target_compile_options(vector_add PUBLIC -Wall -Wextra )
++set_property(TARGET vector_add PROPERTY LINK_FLAGS "-lOpenCL -shared")
++
+ 
+diff --git a/vector_add/vector_add.cpp b/vector_add/vector_add.cpp
+index 5451547..d1a29a1 100755
+--- a/vector_add/vector_add.cpp
++++ b/vector_add/vector_add.cpp
+@@ -16,10 +16,15 @@
+ 
+ #include <CL/cl.hpp>
+ #include <iostream>
++//int A[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
++//int B[] = { 0, 1, 2, 0, 1, 2, 0, 1, 2, 0 };
+ 
+-int main(){
++extern "C" int vector_add (int* A, int* B, int* C, int dimension){
+ 	try{
+ 
++		for (int i = 0; i < dimension; i++){
++			std::cout << A[i] << " ";
++		}
+ 		//get all platforms (drivers)
+ 		std::vector<cl::Platform> all_platforms;
+ 		cl::Platform::get(&all_platforms);
+@@ -27,7 +32,7 @@ int main(){
+ 			std::cout << " No platforms found. Check OpenCL installation!\n";
+ 			exit(1);
+ 		}
+-		cl::Platform default_platform = all_platforms[0];
++		cl::Platform default_platform = all_platforms[atoi(getenv("OCL_DEVICE_NR"))];
+ 		std::cout << "Using platform: " << default_platform.getInfo<CL_PLATFORM_NAME>() << "\n";
+ 
+ 		//get default device of the default platform
+@@ -62,34 +67,32 @@ int main(){
+ 		}
+ 
+ 		// create buffers on the device
+-		cl::Buffer buffer_A(context, CL_MEM_READ_WRITE, sizeof(int) * 10);
+-		cl::Buffer buffer_B(context, CL_MEM_READ_WRITE, sizeof(int) * 10);
+-		cl::Buffer buffer_C(context, CL_MEM_READ_WRITE, sizeof(int) * 10);
++		cl::Buffer buffer_A(context, CL_MEM_READ_WRITE, sizeof(int) * dimension);
++		cl::Buffer buffer_B(context, CL_MEM_READ_WRITE, sizeof(int) * dimension);
++		cl::Buffer buffer_C(context, CL_MEM_READ_WRITE, sizeof(int) * dimension);
+ 
+-		int A[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+-		int B[] = { 0, 1, 2, 0, 1, 2, 0, 1, 2, 0 };
+ 
+ 		//create queue to which we will push commands for 	the device.
+ 		cl::CommandQueue queue(context, default_device);
+ 
+ 		//write arrays A and B to the device
+-		queue.enqueueWriteBuffer(buffer_A, CL_TRUE, 0, sizeof(int) * 10, A);
+-		queue.enqueueWriteBuffer(buffer_B, CL_TRUE, 0, sizeof(int) * 10, B);
++		queue.enqueueWriteBuffer(buffer_A, CL_TRUE, 0, sizeof(int) * dimension, A);
++		queue.enqueueWriteBuffer(buffer_B, CL_TRUE, 0, sizeof(int) * dimension, B);
+ 
+ 		cl::Kernel kernel(program, "simple_add");
+ 
+ 		kernel.setArg(0, buffer_A);
+ 		kernel.setArg(1, buffer_B);
+ 		kernel.setArg(2, buffer_C);
+-		queue.enqueueNDRangeKernel(kernel, cl::NullRange, cl::NDRange(10), cl::NullRange);
++		queue.enqueueNDRangeKernel(kernel, cl::NullRange, cl::NDRange(dimension), cl::NullRange);
+ 
+-		int C[10];
++		//int C[dimension];
+ 		//read result C from the device to array C
+-		queue.enqueueReadBuffer(buffer_C, CL_TRUE, 0, sizeof(int) * 10, C);
++		queue.enqueueReadBuffer(buffer_C, CL_TRUE, 0, sizeof(int) * dimension, C);
+ 		queue.finish();
+ 
+ 		std::cout << " result: \n";
+-		for (int i = 0; i < 10; i++){
++		for (int i = 0; i < dimension; i++){
+ 			std::cout << C[i] << " ";
+ 		}
+ 		std::cout << std::endl;
+```
+
+This patch, allows for 4 arguments, 3 for the input/output vectors and 1 for
+the dimension.
+
+Let's rebuild and test out our new `vector_add` library with a tweaked wrapper program:
+
+```
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+int vector_add(int *A, int *B, int *C, int dimension);
+
+int main(int argc, char **argv)
+{
+	int A[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+	int B[] = { 0, 1, 2, 0, 1, 2, 0, 1, 2, 0 };
+	int C[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+	int dimension = sizeof(A)/sizeof(int);
+	int i = 0;
+
+	vector_add(A, B, C, dimension);
+
+	printf("wrapper start printing vector C\n");
+	for (i=0;i<dimension;i++)
+		printf("%d ", C[i]);
+	printf("\n");
+
+	return 0;
+}
+```
+
+```
+gcc wrapper-args.c -Wall -L../opencl_examples/build/vector_add -lvector_add -lOpenCL
+```
+
+```
+$ OCL_DEVICE_NR=0 LD_LIBRARY_PATH=/home/ananos/develop/opencl_examples/build/vector_add/ ./a.out 
+Using platform: Intel(R) OpenCL HD Graphics
+Using device: Intel(R) Graphics [0x9b41]
+ result: 
+0 2 4 3 5 7 6 8 10 9 
+wrapper start printing vector C
+0 2 4 3 5 7 6 8 10 9 
+```
+
+All good for now. Let's tweak vAccel.
+
+#### Pack/unpack arguments
+
+First thing to do, is come up with a representation for arguments in order to
+easily pack them in the wrapper program and unpack them in the plugin. Something 
+along the lines of the following is more than enough:
+
+```
+struct vector_arg {
+        uint32_t len;
+        uint8_t *buf;
+};
+```
+
+Let's tweak our vAccel wrapper program:
+
+```
+
+```
