@@ -695,7 +695,7 @@ gcc wrapper-args.c -Wall -L../opencl_examples/build/vector_add -lvector_add -lOp
 ```
 
 ```
-$ OCL_DEVICE_NR=0 LD_LIBRARY_PATH=/home/ananos/develop/opencl_examples/build/vector_add/ ./a.out 
+$ OCL_DEVICE_NR=0 LD_LIBRARY_PATH=../opencl_examples/build/vector_add/ ./a.out 
 Using platform: Intel(R) OpenCL HD Graphics
 Using device: Intel(R) Graphics [0x9b41]
  result: 
@@ -714,7 +714,7 @@ along the lines of the following is more than enough:
 
 ```
 struct vector_arg {
-        uint32_t len;
+        size_t len;
         uint8_t *buf;
 };
 ```
@@ -722,5 +722,194 @@ struct vector_arg {
 Let's tweak our vAccel wrapper program:
 
 ```
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include <vaccel.h>
+#include <vaccel_ops.h>
+
+struct vector_arg {
+        size_t len;
+        uint8_t *buf;
+} __attribute__ ((packed));
+
+int vaccel_vector_add(int *A, int *B, int *C, int dimension)
+{
+
+	int ret = 0;
+	struct vector_arg op_args[5];
+	struct vaccel_session sess;
+
+        ret = vaccel_sess_init(&sess, 0);
+        if (ret != VACCEL_OK) {
+                fprintf(stderr, "Could not initialize session\n");
+                return 1;
+        }
+
+        printf("Initialized session with id: %u\n", sess.session_id);
+
+	char *operation = "vector-add";
+	size_t oplen = strlen(operation);
+
+        memset(op_args, 0, sizeof(op_args));
+
+        op_args[0].len = oplen;
+        op_args[0].buf = operation;
+        op_args[1].len = dimension * sizeof(int);
+        op_args[1].buf = A;
+        op_args[2].len = dimension * sizeof(int);
+        op_args[2].buf = B;
+        op_args[3].len = sizeof(int);
+        op_args[3].buf = &dimension;
+
+        op_args[4].len = dimension * sizeof(int);
+        op_args[4].buf = C;
+
+        ret = vaccel_genop(&sess, &op_args[4], &op_args[0], 1, 4);
+	if (ret) {
+		fprintf(stderr, "Could not run op: %d\n", ret);
+		goto close_session;
+	}
+
+close_session:
+        if (vaccel_sess_free(&sess) != VACCEL_OK) {
+                fprintf(stderr, "Could not clear session\n");
+                return 1;
+        }
+
+	return ret;
+}
+
+int main(int argc, char **argv)
+{
+	int A[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+	int B[] = { 0, 1, 2, 0, 1, 2, 0, 1, 2, 0 };
+	int C[] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+	int dimension = sizeof(A)/sizeof(int);
+	int i = 0;
+
+	vaccel_vector_add(A, B, C, dimension);
+
+	printf("wrapper start printing vector C\n");
+	for (i=0;i<dimension;i++)
+		printf("%d ", C[i]);
+	printf("\n");
+
+	return 0;
+}
+```
+
+Before running it, we need to make sure we also tweak the plugin we built, in
+order to properly unpack the arguments.
+
+Lets go to the vaccelrt source tree and edit `plugins/vadd/vaccel.c` into:
+```
+#include <stdio.h>
+#include <plugin.h>
+#include <byteswap.h>
+
+#include "log.h"
+
+int vector_add(int*A,int*B,int*C, int dimension);
+
+struct vector_arg {
+        size_t len;
+        uint8_t *buf;
+} __attribute__ ((packed));
+
+static int noop(struct vaccel_session *session)
+{
+	vaccel_debug("Calling no-op for session %u", session->session_id);
+
+	vaccel_debug("[vadd] [noop] \n");
+
+	return VACCEL_OK;
+}
+
+static int genop(struct vaccel_session *session, void *out_args, void *in_args,
+			  size_t out_nargs, size_t in_nargs)
+{
+	int i = 0;
+	struct vector_arg *in_arg = in_args;
+	struct vector_arg *out_arg = out_args;
+
+	vaccel_debug("Calling do-op for session %u", session->session_id);
+
+	vaccel_debug("[vadd] [genop] in_nargs: %d, out_nargs: %d\n", in_nargs, out_nargs);
+
+	int dimension = *(in_arg[3].buf);
+	int *A = (int*)in_arg[1].buf;
+	int *B = (int*)in_arg[2].buf;
+	int *C = (int*)out_arg[0].buf;
+	vector_add(A, B, C, dimension);
+
+	return VACCEL_OK;
+}
+
+struct vaccel_op ops[] = {
+	VACCEL_OP_INIT(ops[0],VACCEL_NO_OP, noop),
+	VACCEL_OP_INIT(ops[1],VACCEL_GEN_OP, genop),
+};
+
+static int init(void)
+{
+	return register_plugin_functions(ops, sizeof(ops) / sizeof(ops[0]));
+}
+
+static int fini(void)
+{
+	return VACCEL_OK;
+}
+
+VACCEL_MODULE(
+	.name = "vadd",
+	.version = "0.1",
+	.init = init,
+	.fini = fini
+)
+```
+
+and make sure we build again in `vaccelrt/build`:
 
 ```
+make
+```
+
+This should produce an updated `libvaccel-vadd.so`.
+
+Now, lets go back to our wrapper program and build it:
+```
+gcc -owrapper_genop-args wrapper_genop-args.c -Wall -L../vaccelrt/build/src -I../vaccelrt/src -lvaccel -ldl
+```
+
+If we run it, we get the following:
+```
+VACCEL_DEBUG_LEVEL=4 VACCEL_BACKENDS=../vaccelrt/build2/plugins/vadd/libvaccel-vadd.so LD_LIBRARY_PATH=../vaccelrt/build2/src:. ./wrapper_genop 
+2021.04.06-20:34:32.22 - <debug> Initializing vAccel
+2021.04.06-20:34:32.23 - <debug> Registered plugin vadd
+2021.04.06-20:34:32.23 - <debug> Registered function noop from plugin vadd
+2021.04.06-20:34:32.23 - <debug> Registered function gen-op from plugin vadd
+2021.04.06-20:34:32.23 - <debug> Loaded plugin vadd from ../vaccelrt/build2/plugins/vadd/libvaccel-vadd.so
+2021.04.06-20:34:32.23 - <debug> session:1 New session
+Initialized session with id: 1
+2021.04.06-20:34:32.23 - <debug> session:1 Looking for plugin implementing generic op
+2021.04.06-20:34:32.23 - <debug> Found implementation in vadd plugin
+2021.04.06-20:34:32.23 - <debug> Calling do-op for session 1
+2021.04.06-20:34:32.23 - <debug> [vadd] [genop] in_nargs: 4, out_nargs: 1
+
+Using platform: Portable Computing Language
+Using device: pthread-Intel(R) Core(TM) i7-10610U CPU @ 1.80GHz
+ result: 
+0 2 4 3 5 7 6 8 10 9 
+2021.04.06-20:34:32.33 - <debug> session:1 Free session
+wrapper start printing vector C
+0 2 4 3 5 7 6 8 10 9 
+2021.04.06-20:34:32.33 - <debug> Shutting down vAccel
+2021.04.06-20:34:32.33 - <debug> Cleaning up plugins
+2021.04.06-20:34:32.33 - <debug> Unregistered plugin vadd
+```
+
+Which seems like a successful execution. We did it!
+
